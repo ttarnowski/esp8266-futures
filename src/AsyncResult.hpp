@@ -24,3 +24,23 @@ private:
   AsyncState state;
   T value;
 };
+
+template <> class AsyncResult<void> {
+public:
+  static AsyncResult<void> pending() {
+    return AsyncResult<void>(AsyncState::Pending);
+  }
+
+  static AsyncResult<void> resolve() {
+    return AsyncResult<void>(AsyncState::Resolved);
+  }
+
+  AsyncResult(AsyncState state) { this->state = state; }
+
+  bool is_pending() { return this->state == AsyncState::Pending; }
+
+  bool is_resolved() { return this->state == AsyncState::Resolved; }
+
+private:
+  AsyncState state;
+};
