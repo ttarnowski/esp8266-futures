@@ -1,6 +1,9 @@
 #include <Future.hpp>
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <iostream>
+
+using namespace testing;
 
 unsigned long millis() {
   return std::chrono::system_clock::now().time_since_epoch() /
@@ -129,4 +132,155 @@ TEST(
   ASSERT_EQ(*f.result.get_value(), "true");
   ASSERT_EQ(*g.result.get_value(), "false");
   ASSERT_GE(millis(), time);
+}
+
+class Callback {
+  virtual void call(int actual) = 0;
+};
+
+class CallbackMock : public Callback {
+public:
+  MOCK_METHOD(void, call, (int actual), (override));
+};
+
+TEST(Future, test_void_and_non_void_chaining_for_futures) {
+  CallbackMock mock;
+  int expected = 3;
+  Future<void, void> f1([]() { return AsyncResult<void>::resolve(); });
+
+  EXPECT_CALL(mock, call(Eq(expected)));
+
+  auto f = f1.and_then(Future<void, int>([expected]() {
+               return AsyncResult<int>::resolve(expected);
+             }))
+               .and_then(Future<int, void>([&mock](int actual) {
+                 mock.call(actual);
+                 return AsyncResult<void>::resolve();
+               }));
+
+  while (f.poll().is_pending())
+    ;
+
+  ASSERT_TRUE(f.result.is_resolved());
+}
+
+TEST(Future, test_void_and_non_void_chaining_for_callbacks) {
+  CallbackMock mock;
+  int expected = 4;
+
+  EXPECT_CALL(mock, call(Eq(expected))).Times(3);
+
+  Future<void, int> f1(
+      [expected]() { return AsyncResult<int>::resolve(expected); });
+
+  auto f = f1.and_then<void>([&mock](int actual) { mock.call(actual); })
+               .and_then<int>([expected]() { return expected; })
+               .and_then<void>([&mock](int actual) { mock.call(actual); })
+               .and_then<void>([&mock, expected]() { mock.call(expected); });
+
+  while (f.poll().is_pending())
+    ;
+
+  ASSERT_TRUE(f.result.is_resolved());
+}
+
+TEST(Future, test_error_handling_with_default_error) {
+  CallbackMock mock;
+  const char *expected = "expected error";
+
+  EXPECT_CALL(mock, call(_)).Times(0);
+
+  Future<void, int> f1(
+      [expected]() { return AsyncResult<int>::reject(Error(expected)); });
+
+  auto f = f1.and_then(Future<int, int>([&mock](int val) {
+               mock.call(val);
+
+               return val;
+             }))
+               .and_then<void>([&mock](int val) { mock.call(val); });
+
+  while (f.poll().is_pending())
+    ;
+
+  ASSERT_TRUE(f.result.is_rejected());
+  ASSERT_STREQ(*f.result.get_error(), expected);
+}
+
+TEST(Future, test_error_handling_with_custom_error_in_first_future) {
+  class CustomError : ErrorBase {
+  public:
+    CustomError() { strcpy(this->err, "error : 0"); }
+
+    CustomError(const char *err, int code = 0) {
+      sprintf(this->err, "%s : %d", err, code);
+    }
+
+    operator const char *() override { return this->err; }
+
+  private:
+    char err[64];
+  };
+
+  CallbackMock mock;
+  const char *error_message = "expected error";
+  int error_code = 123;
+  char expected[32];
+  sprintf(expected, "%s : %d", error_message, error_code);
+
+  EXPECT_CALL(mock, call(_)).Times(0);
+
+  Future<void, int, CustomError> f1([expected, error_message, error_code]() {
+    return AsyncResult<int, CustomError>::reject(
+        CustomError(error_message, error_code));
+  });
+
+  auto f = f1.and_then(Future<int, int>([&mock](int val) {
+               mock.call(val);
+
+               return val;
+             }))
+               .and_then<void>([&mock](int val) { mock.call(val); });
+
+  while (f.poll().is_pending())
+    ;
+
+  ASSERT_TRUE(f.result.is_rejected());
+  ASSERT_STREQ(*f.result.get_error(), expected);
+}
+
+TEST(Future, test_error_handling_with_custom_error_in_last_future) {
+  class CustomError : ErrorBase {
+  public:
+    CustomError() { strcpy(this->err, "error : 0"); }
+
+    CustomError(const char *err, int code = 0) {
+      sprintf(this->err, "%s : %d", err, code);
+    }
+
+    operator const char *() override { return this->err; }
+
+  private:
+    char err[64];
+  };
+
+  const char *error_message = "expected error";
+  int error_code = 123;
+  char expected[32];
+  sprintf(expected, "%s : %d", error_message, error_code);
+
+  Future<void, void> f1([]() { return AsyncResult<void>::resolve(); });
+
+  Future<void, int, CustomError> f2([expected, error_message, error_code]() {
+    return AsyncResult<int, CustomError>::reject(
+        CustomError(error_message, error_code));
+  });
+
+  auto f = f1.and_then(f2);
+
+  while (f.poll().is_pending())
+    ;
+
+  ASSERT_TRUE(f.result.is_rejected());
+  ASSERT_STREQ(*f.result.get_error(), expected);
 }
